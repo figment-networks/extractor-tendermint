@@ -3,7 +3,6 @@ package extractor
 import (
 	"bytes"
 	"fmt"
-	"sync"
 	"testing"
 	"time"
 
@@ -127,11 +126,10 @@ func TestIndexBlock(t *testing.T) {
 
 	for _, ex := range examples {
 		output := bytes.NewBuffer(nil)
-		writer := NewConsoleWriter(output)
+		extractor := NewExtractorService(nil, nil)
+		extractor.writer = NewConsoleWriter(output)
 
-		lock := &sync.Mutex{}
-
-		err := indexBlock(writer, lock, ex.input)
+		err := extractor.indexBlock(ex.input)
 		if err != nil {
 			assert.Equal(t, err.Error(), ex.err)
 		}
@@ -161,10 +159,10 @@ func TestIndexTx(t *testing.T) {
 
 	for _, ex := range examples {
 		output := bytes.NewBuffer(nil)
-		writer := NewConsoleWriter(output)
-		lock := &sync.Mutex{}
+		extractor := NewExtractorService(nil, nil)
+		extractor.writer = NewConsoleWriter(output)
 
-		err := indexTX(writer, lock, ex.input)
+		err := extractor.indexTX(ex.input)
 		if err != nil {
 			assert.Equal(t, err.Error(), ex.err)
 		}

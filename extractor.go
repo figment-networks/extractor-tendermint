@@ -29,13 +29,19 @@ type ExtractorService struct {
 
 	config   *Config
 	eventBus *types.EventBus
-	writer   Writer
+
+	writer     Writer
+	writerLock sync.Mutex
+
+	terminated    bool
+	terminatedErr error
 }
 
 func NewExtractorService(eventBus *types.EventBus, config *Config) *ExtractorService {
 	is := &ExtractorService{
-		eventBus: eventBus,
-		config:   config,
+		eventBus:   eventBus,
+		config:     config,
+		writerLock: sync.Mutex{},
 	}
 	is.BaseService = *service.NewBaseService(nil, subscriberName, is)
 
@@ -86,8 +92,6 @@ func (ex *ExtractorService) OnStop() {
 }
 
 func (ex *ExtractorService) listen(blockSub, txsSub types.Subscription) {
-	sync := &sync.Mutex{}
-
 	for {
 		blockMsg := <-blockSub.Out()
 		eventData := blockMsg.Data().(types.EventDataNewBlock)
@@ -101,9 +105,10 @@ func (ex *ExtractorService) listen(blockSub, txsSub types.Subscription) {
 		}
 		// we need to drain all
 
-		if err := indexBlock(ex.writer, sync, eventData); err != nil {
-			ex.drainSubscription(txsSub, len(eventData.Block.Txs))
+		if err := ex.indexBlock(eventData); err != nil {
 			ex.Logger.Error("failed to index block", "height", height, "err", err)
+			ex.terminate(err)
+			ex.drainSubscription(txsSub, len(eventData.Block.Txs))
 			continue
 		}
 
@@ -113,13 +118,22 @@ func (ex *ExtractorService) listen(blockSub, txsSub types.Subscription) {
 			txMsg := <-txsSub.Out()
 			txResult := txMsg.Data().(types.EventDataTx).TxResult
 
-			if err := indexTX(ex.writer, sync, &txResult); err != nil {
+			if err := ex.indexTX(&txResult); err != nil {
 				ex.Logger.Error("failed to index block txs", "height", height, "err", err)
+				ex.terminate(err)
 			} else {
 				ex.Logger.Debug("indexed block txs", "height", height)
 			}
 		}
 	}
+}
+
+func (ex *ExtractorService) terminate(err error) {
+	if ex.terminated && ex.terminatedErr != nil {
+		return
+	}
+	ex.terminated = true
+	ex.terminatedErr = err
 }
 
 func (ex *ExtractorService) shouldSkipHeight(height int64) bool {
@@ -161,7 +175,19 @@ func (ex *ExtractorService) initStreamOutput() error {
 	return nil
 }
 
-func indexTX(out Writer, sync *sync.Mutex, result *abci.TxResult) error {
+func (ex *ExtractorService) writeLine(line string) error {
+	ex.writerLock.Lock()
+	err := ex.writer.WriteLine(line)
+	ex.writerLock.Unlock()
+	return err
+}
+
+func (ex *ExtractorService) indexTX(result *abci.TxResult) error {
+	if ex.terminated {
+		ex.Logger.Error("can't index tx, stream is terminated", "err", ex.terminatedErr)
+		return nil
+	}
+
 	tx := &codec.EventDataTx{
 		TxResult: &codec.TxResult{
 			Height: uint64(result.Height),
@@ -188,10 +214,7 @@ func indexTX(out Writer, sync *sync.Mutex, result *abci.TxResult) error {
 		return err
 	}
 
-	sync.Lock()
-	defer sync.Unlock()
-
-	return out.WriteLine(fmt.Sprintf("%s %d %d %s",
+	return ex.writeLine(fmt.Sprintf("%s %d %d %s",
 		dmTx,
 		result.Height,
 		result.Index,
@@ -199,8 +222,13 @@ func indexTX(out Writer, sync *sync.Mutex, result *abci.TxResult) error {
 	))
 }
 
-func indexBlock(out Writer, sync *sync.Mutex, bh types.EventDataNewBlock) error {
-	if err := out.SetHeight(int(bh.Block.Height)); err != nil {
+func (ex *ExtractorService) indexBlock(bh types.EventDataNewBlock) error {
+	if ex.terminated {
+		ex.Logger.Error("can't index tx, stream is terminated", "err", ex.terminatedErr)
+		return nil
+	}
+
+	if err := ex.writer.SetHeight(int(bh.Block.Height)); err != nil {
 		return err
 	}
 
@@ -328,10 +356,7 @@ func indexBlock(out Writer, sync *sync.Mutex, bh types.EventDataNewBlock) error 
 		return err
 	}
 
-	sync.Lock()
-	defer sync.Unlock()
-
-	return out.WriteLine(fmt.Sprintf("%s %d %d %s",
+	return ex.writeLine(fmt.Sprintf("%s %d %d %s",
 		dmBlock,
 		bh.Block.Header.Height,
 		bh.Block.Header.Time.UnixMilli(),

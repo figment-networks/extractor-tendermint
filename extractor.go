@@ -224,7 +224,7 @@ func (ex *ExtractorService) indexTX(result *abci.TxResult) error {
 
 func (ex *ExtractorService) indexBlock(bh types.EventDataNewBlock) error {
 	if ex.terminated {
-		ex.Logger.Error("can't index tx, stream is terminated", "err", ex.terminatedErr)
+		ex.Logger.Error("can't index block, stream is terminated", "err", ex.terminatedErr)
 		return nil
 	}
 

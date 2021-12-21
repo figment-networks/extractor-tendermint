@@ -20,10 +20,12 @@ import (
 const (
 	subscriberName = "ExtractorService"
 
-	dmPrefix    = "DMLOG "
-	dmBlock     = dmPrefix + "BLOCK"
-	dmTx        = dmPrefix + "TX"
-	dmValidator = dmPrefix + "VALIDATOR_SET_UPDATES"
+	dmPrefix     = "DMLOG "
+	dmBlockBegin = dmPrefix + "BLOCK_BEGIN"
+	dmBlockEnd   = dmPrefix + "BLOCK_END"
+	dmBlock      = dmPrefix + "BLOCK"
+	dmTx         = dmPrefix + "TX"
+	dmValidator  = dmPrefix + "VALIDATOR_SET_UPDATES"
 )
 
 type ExtractorService struct {
@@ -55,6 +57,16 @@ func (ex *ExtractorService) OnStart() error {
 		return err
 	}
 
+	blockBeginSub, err := ex.eventBus.SubscribeUnbuffered(context.Background(), subscriberName, types.EventQueryBlockBegin)
+	if err != nil {
+		return err
+	}
+
+	blockEndSub, err := ex.eventBus.SubscribeUnbuffered(context.Background(), subscriberName, types.EventQueryBlockEnd)
+	if err != nil {
+		return err
+	}
+
 	blockSub, err := ex.eventBus.SubscribeUnbuffered(context.Background(), subscriberName, types.EventQueryNewBlock)
 	if err != nil {
 		return err
@@ -75,7 +87,7 @@ func (ex *ExtractorService) OnStart() error {
 		return err
 	}
 
-	go ex.listen(blockSub, txsSub, valSetUpdatesSub)
+	go ex.listen(blockBeginSub, blockEndSub, blockSub, txsSub, valSetUpdatesSub)
 
 	return nil
 }
@@ -93,11 +105,15 @@ func (ex *ExtractorService) OnStop() {
 	}
 }
 
-func (ex *ExtractorService) listen(blockSub, txsSub, valSetUpdatesSub types.Subscription) {
+func (ex *ExtractorService) listen(blockBeginSub, blockEndSub, blockSub, txsSub, valSetUpdatesSub types.Subscription) {
 	sync := &sync.Mutex{}
 
 	for {
 		select {
+		case msg := <-blockBeginSub.Out():
+			ex.writer.WriteLine(fmt.Sprintf("%s %d", dmBlockBegin, msg.Data().(int64)))
+		case msg := <-blockEndSub.Out():
+			ex.writer.WriteLine(fmt.Sprintf("%s %d", dmBlockEnd, msg.Data().(int64)))
 		case blockMsg := <-blockSub.Out():
 			eventData := blockMsg.Data().(types.EventDataNewBlock)
 			height := eventData.Block.Header.Height
